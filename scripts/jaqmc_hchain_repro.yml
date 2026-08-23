@@ -1,0 +1,95 @@
+# Generic JaQMC periodic hydrogen-chain configuration.
+# Defaults target the DeepSolid H24, R=2 bohr reproduction discussed in this thread.
+# CLI overrides from run_jaqmc_hchain.py / jaqmc_hchain_job.sbatch take precedence.
+
+logging:
+  level: info
+  stream: stdout
+
+jax:
+  enable_x64: true
+
+workflow:
+  seed: 20260820
+  batch_size: 2048
+
+system:
+  module: two_atom_chain
+  symbol: H
+  bond_length: 2.0
+  unit: bohr
+  supercell: 12
+  # IMPORTANT: replace this with the original DeepSolid transverse cell size
+  # before claiming a quantitative mHa-level reproduction.
+  vacuum_separation: 20.0
+  s_z: 0
+  electron_init_width: 0.8
+
+wf:
+  hidden_dims_single: [256, 256, 256, 256]
+  hidden_dims_double: [32, 32, 32, 32]
+  ndets: 1
+  distance_type: nu
+  envelope_type: abs_isotropic
+  full_det: false
+
+pretrain:
+  reference:
+    basis: sto-3g
+    sample_fraction: 1.0
+    verbose: 0
+    method: KUHF
+  run:
+    iterations: 200
+    burn_in: 100
+    save_time_interval: 1800
+    save_step_interval: 100
+    timing_warmup_steps: 10
+    stop_on_nan: loss
+  optim:
+    module: jaqmc.optimizer.optax:adam
+    learning_rate:
+      module: jaqmc.optimizer.schedule:Constant
+      rate: 0.0003
+
+sampler:
+  steps: 20
+  initial_width: 0.02
+  adapt_frequency: 100
+  pmove_range: [0.5, 0.55]
+
+train:
+  run:
+    iterations: 40000
+    burn_in: 100
+    save_time_interval: 1800
+    save_step_interval: 500
+    timing_warmup_steps: 10
+    stop_on_nan: loss
+  optim:
+    module: jaqmc.optimizer.kfac:KFACOptimizer
+    learning_rate:
+      module: jaqmc.optimizer.schedule:Standard
+      rate: 0.01
+      delay: 10000.0
+      decay: 1.0
+    norm_constraint: 0.001
+    curvature_ema: 0.95
+    l2_reg: 0.0
+    inverse_update_period: 1
+    damping: 0.001
+  grads:
+    vmap_chunk_size: null
+    loss_key: total_energy
+    clip_method: mad
+    clip_scale: 5.0
+
+estimators:
+  energy:
+    kinetic:
+      vmap_chunk_size: null
+      mode: forward_laplacian
+      sparse: true
+  enabled:
+    spin: false
+    density: false

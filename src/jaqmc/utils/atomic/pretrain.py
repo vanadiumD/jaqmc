@@ -1,10 +1,10 @@
 # Copyright (c) 2025-2026 ByteDance Ltd. and/or its affiliates
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared orbital-reference pretraining utilities."""
+"""Shared pretrain loss estimator for atomic systems (molecule, solid)."""
 
 from collections.abc import Callable, Mapping
-from typing import Any, Protocol
+from typing import Any
 
 import jax
 import serde
@@ -19,17 +19,7 @@ from jaqmc.utils.config import configurable_dataclass
 from jaqmc.wavefunction import NumericWavefunctionEvaluate
 from jaqmc.wavefunction.base import WavefunctionEvaluate
 
-
-class OrbitalReference(Protocol):
-    """Reference wavefunction that can evaluate spin-separated orbitals.
-
-    References usually come from an SCF calculation, but may also be analytic,
-    such as the free-electron plane waves used for electron-gas pretraining.
-    """
-
-    def eval_orbitals(
-        self, pos: jnp.ndarray, nspins: tuple[int, int]
-    ) -> tuple[jnp.ndarray, jnp.ndarray]: ...
+from .scf import MolecularSCF, PeriodicSCF
 
 
 @configurable_dataclass
@@ -54,21 +44,20 @@ class PretrainReferenceConfig:
 
 def make_pretrain_log_amplitude[DataT: Data](
     log_psi_fn: WavefunctionEvaluate[DataT, jnp.ndarray],
-    ref_log_amplitude_fn: Callable[[DataT], jnp.ndarray],
-    ref_fraction: float = 0.0,
+    scf_log_amplitude_fn: Callable[[DataT], jnp.ndarray],
+    scf_fraction: float = 0.0,
 ) -> WavefunctionEvaluate[DataT, jnp.ndarray]:
-    """Create a log amplitude function for pretraining sampling.
+    """Creates a log amplitude function for pretraining sampling.
 
-    The reference normally comes from an SCF calculation, but may also be an
-    analytic reference. The returned function evaluates the reference ansatz,
-    the neural ansatz, or a weighted mixture of the two.
+    Creates a function that returns either the SCF ansatz, the neural network
+    ansatz, or a weighted mixture of the two. This allows sampling from an
+    SCF-biased distribution during pretraining.
 
     Args:
         log_psi_fn: Neural network log amplitude function.
-        ref_log_amplitude_fn: Function that takes data and returns the reference
+        scf_log_amplitude_fn: Function that takes data and returns the SCF
             log amplitude.
-        ref_fraction: Mixing fraction for the reference
-            (0.0 = pure neural ansatz, 1.0 = pure reference).
+        scf_fraction: Mixing fraction for SCF (0.0 = pure NN, 1.0 = pure SCF).
 
     Returns:
         A log amplitude function for sampling.
@@ -77,49 +66,49 @@ def make_pretrain_log_amplitude[DataT: Data](
         DataT: Concrete ``Data`` subtype consumed by both input callables.
 
     Raises:
-        ValueError: If ref_fraction is not between 0 and 1.
+        ValueError: If scf_fraction is not between 0 and 1.
     """
-    if ref_fraction > 1 or ref_fraction < 0:
-        raise ValueError("ref_fraction must be in between 0 and 1, inclusive.")
+    if scf_fraction > 1 or scf_fraction < 0:
+        raise ValueError("scf_fraction must be in between 0 and 1, inclusive.")
 
-    if ref_fraction <= 0.0:
+    if scf_fraction <= 0.0:
         return log_psi_fn
 
-    def ref_network(params, data):
+    def scf_network(params, data):
         del params
-        return ref_log_amplitude_fn(data)
+        return scf_log_amplitude_fn(data)
 
-    if ref_fraction >= 1.0:
-        return ref_network
+    if scf_fraction >= 1.0:
+        return scf_network
 
     def log_amplitude(params, data):
         log_psi = log_psi_fn(params, data)
-        log_ref = ref_network(None, data)
-        return (1 - ref_fraction) * log_psi + ref_fraction * log_ref
+        log_scf = scf_network(None, data)
+        return (1 - scf_fraction) * log_psi + scf_fraction * log_scf
 
     return log_amplitude
 
 
 def make_pretrain_loss(
     orbitals_fn: NumericWavefunctionEvaluate,
-    orbital_ref: OrbitalReference,
+    scf: MolecularSCF | PeriodicSCF,
     nspins: tuple[int, int],
     full_det: bool = False,
 ) -> Estimator:
-    """Return a loss estimator matching neural and reference orbitals.
+    """Returns a pretrain loss estimator matching NN orbitals to HF orbitals.
 
-    The reference may come from an SCF calculation or an analytic model such as
-    free-electron plane waves.
+    Used by both molecule and solid workflows to pretrain the wavefunction
+    against Hartree-Fock orbitals from an SCF calculation.
 
     Args:
         orbitals_fn: Function to evaluate NN orbitals.
-        orbital_ref: Spin-separated orbital reference.
+        scf: SCF instance (MolecularSCF or PeriodicSCF).
         nspins: Electron spin counts as (n_alpha, n_beta).
         full_det: Whether to use full determinant.
     """
 
     def loss_fn(params: Params, data: Data) -> jnp.ndarray:
-        target = orbital_ref.eval_orbitals(data["electrons"], nspins)
+        target = scf.eval_orbitals(data["electrons"], nspins)
         orbitals = orbitals_fn(params, data)
         if full_det:
             na = target[0].shape[-2]

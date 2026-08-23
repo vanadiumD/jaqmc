@@ -11,7 +11,6 @@ from jax import numpy as jnp
 from upath import UPath
 
 from jaqmc.utils.config import configurable_dataclass
-from jaqmc.workflow.stage.base import StageAbort
 from jaqmc.writer.base import Writer
 
 __all__ = ["WandbWriter"]
@@ -64,15 +63,10 @@ class WandbWriter(Writer):
         else:
             init_kwargs = self._init_kwargs(working_dir, stage_name)
             self._run = wandb.init(**init_kwargs)
-            should_call_finish = True
             try:
                 yield
-            except StageAbort:
-                should_call_finish = False
-                raise  # Ensure the error propagates
             finally:
-                if should_call_finish:
-                    self._run.finish()
+                self._run.finish()
                 self._run = None
 
     @staticmethod
