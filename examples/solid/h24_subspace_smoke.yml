@@ -10,7 +10,7 @@ jax:
 
 workflow:
   seed: 20260820
-  batch_size: 4
+  batch_size: 512
   save_path: runs/h24_subspace_m2_smoke
 
 system:
