@@ -11,7 +11,7 @@ jax:
 
 workflow:
   seed: 20260820
-  batch_size: 32
+  batch_size: 512
   save_path: runs/subspace_smoke
 
 system:
