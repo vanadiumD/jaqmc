@@ -408,7 +408,12 @@ def test_solid_subspace_train_help_is_exposed() -> None:
 
 
 @pytest.mark.parametrize(
-    "config_name", ["hchain_subspace_smoke.yml", "h24_subspace_smoke.yml"]
+    "config_name",
+    [
+        "hchain_subspace_smoke.yml",
+        "hchain_subspace_tda_pretrain_smoke.yml",
+        "h24_subspace_smoke.yml",
+    ],
 )
 def test_solid_subspace_smoke_yaml_dry_run(config_name: str) -> None:
     smoke_config = (
@@ -444,6 +449,27 @@ def test_solid_subspace_h24_overlay_dry_run(hardware_name: str) -> None:
             str(configs / "workflows" / "subspace_smoke.yml"),
             "--yml",
             str(configs / "hardware" / hardware_name),
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+
+
+def test_solid_subspace_h24_tda_pretrain_overlay_dry_run() -> None:
+    root = Path(__file__).resolve().parents[1]
+    configs = root / "configs"
+    result = CliRunner().invoke(
+        cli,
+        [
+            "solid",
+            "subspace-train",
+            "--yml",
+            str(configs / "systems" / "h24_base.yml"),
+            "--yml",
+            str(configs / "workflows" / "subspace_tda_pretrain_smoke.yml"),
+            "--yml",
+            str(configs / "hardware" / "single_v100.yml"),
             "--dry-run",
         ],
     )

@@ -21,6 +21,12 @@ from jaqmc.estimator import (
 from jaqmc.estimator.rayleigh import RayleighMatrixEstimator
 from jaqmc.optimizer.optax import adam
 from jaqmc.sampler.determinant import DeterminantMCMCSampler
+from jaqmc.utils.atomic.pretrain import make_pretrain_log_amplitude
+from jaqmc.utils.atomic.subspace_pretrain import (
+    StateOrbitalReference,
+    make_subspace_pretrain_loss,
+    make_subspace_reference_log_amplitude,
+)
 from jaqmc.utils.config import ConfigManager, configurable_dataclass
 from jaqmc.utils.wiring import wire
 from jaqmc.wavefunction.determinant_state import (
@@ -192,6 +198,7 @@ class SubspaceVMCWorkflow(VMCWorkflow):
             ),
         )
         sampler = self.cfg.get("subspace.sampling", sampler_default)
+        self.subspace_sampler = sampler
         rayleigh = self.cfg.get_module(
             "subspace.evaluation",
             RayleighMatrixEstimator,
@@ -249,6 +256,50 @@ class SubspaceVMCWorkflow(VMCWorkflow):
             writers=native_stage.writers,
             optimizer=native_stage.optimizer,
         )
+
+    def configure_subspace_pretrain(
+        self,
+        *,
+        orbital_reference: StateOrbitalReference,
+        nspins: tuple[int, int],
+        full_det: bool,
+        ref_fraction: float,
+    ) -> None:
+        """Configure native determinant-state orbital pretraining.
+
+        The pretrain and energy stages share the determinant wavefunction and
+        sampler type, allowing :class:`VMCWorkflow` to transfer parameters,
+        walkers, and sampler state without an adapter.
+        """
+        if self.initialization_mode == "checkpoints":
+            raise ValueError(
+                "TDA pretrain and checkpoint initialization are mutually "
+                "exclusive in v1."
+            )
+        loss_estimator = make_subspace_pretrain_loss(
+            orbitals_fn=self.base_wavefunction.orbitals,
+            orbital_ref=orbital_reference,
+            spec=self.spec,
+            nspins=nspins,
+            full_det=full_det,
+        )
+        reference_log_amplitude = make_subspace_reference_log_amplitude(
+            orbital_reference, self.spec, nspins
+        )
+        f_log_amplitude = make_pretrain_log_amplitude(
+            self.wf.logpsi,
+            reference_log_amplitude,
+            ref_fraction=ref_fraction,
+        )
+        pretrain = VMCWorkStage.builder(
+            self.cfg.scoped("pretrain"), self.wf, name="pretrain"
+        )
+        pretrain.configure_sample_plan(
+            f_log_amplitude, {"electrons": self.subspace_sampler}
+        )
+        pretrain.configure_optimizer(default=adam, f_log_psi=self.wf.logpsi)
+        pretrain.configure_estimators(grads=loss_estimator)
+        self.pretrain_stage = pretrain.build()
 
 
 class SubspaceVMCWorkStage(VMCWorkStage):

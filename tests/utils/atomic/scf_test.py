@@ -116,6 +116,19 @@ def test_bloch_periodicity(hydrogen_pbc_scf):
         )
 
 
+def test_periodic_orbital_coeff_adapter_matches_ground_path(hydrogen_pbc_scf):
+    pbc_scf, nspins, *_ = hydrogen_pbc_scf
+    positions = jnp.array([[0.3, 0.4, 0.5]])
+
+    native = pbc_scf.eval_orbitals(positions, nspins)
+    adapted = pbc_scf.eval_orbitals_from_coeffs(
+        positions, nspins, pbc_scf.get_occupied_mo_coeffs()
+    )
+
+    for actual, expected in zip(adapted, native):
+        np.testing.assert_array_equal(actual, expected)
+
+
 def test_density_matches_pyscf_get_rho(hydrogen_pbc_scf):
     """Compare density against PySCF reference (Gamma point only)."""
     import pyscf.pbc.dft

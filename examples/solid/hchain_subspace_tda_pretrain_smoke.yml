@@ -1,0 +1,96 @@
+# Minimal single-GPU KUHF-TDA pretrain -> subspace VMC smoke test.
+logging:
+  level: info
+  stream: stdout
+
+jax:
+  enable_x64: true
+
+workflow:
+  seed: 20260820
+  batch_size: 4
+  save_path: runs/hchain_subspace_tda_pretrain_smoke
+
+system:
+  module: two_atom_chain
+  symbol: H
+  bond_length: 2.0
+  unit: bohr
+  supercell: 1
+  vacuum_separation: 20.0
+  s_z: 0
+  electron_init_width: 0.8
+
+wf:
+  hidden_dims_single: [32, 32]
+  hidden_dims_double: [8, 8]
+  ndets: 1
+  distance_type: nu
+  envelope_type: abs_isotropic
+  full_det: true
+
+reference:
+  basis: sto-3g
+  sample_fraction: 1.0
+  verbose: 0
+  method: KUHF
+
+subspace:
+  n_states: 2
+  initialization:
+    mode: random
+  sampling:
+    steps: 1
+    initial_width: 0.02
+    adapt_frequency: 100
+    pmove_range: [0.5, 0.55]
+  evaluation:
+    vmap_chunk_size: 1
+    pair_chunk_size: 1
+    matrix_dtype: complex128
+
+pretrain:
+  enabled: true
+  tda:
+    kshift: 0
+    oversample: 0
+    candidate_topk: 4
+    min_selected_weight: 1.0e-6
+    require_converged: true
+    require_same_k: true
+  run:
+    iterations: 1
+    burn_in: 1
+    save_time_interval: 0
+    save_step_interval: 1
+    timing_warmup_steps: 0
+    stop_on_nan: loss
+  optim:
+    module: jaqmc.optimizer.optax:adam
+    learning_rate: 3.0e-4
+
+train:
+  run:
+    iterations: 1
+    burn_in: 1
+    save_time_interval: 0
+    save_step_interval: 1
+    timing_warmup_steps: 0
+    stop_on_nan: loss
+  optim:
+    module: jaqmc.optimizer.optax:adam
+    learning_rate: 1.0e-4
+  grads:
+    vmap_chunk_size: 1
+    clip_method: mad
+    clip_scale: 5.0
+
+estimators:
+  energy:
+    kinetic:
+      vmap_chunk_size: 1
+      mode: forward_laplacian
+      sparse: true
+  enabled:
+    spin: false
+    density: false

@@ -117,3 +117,16 @@ from each PH-supported element to the ECP used to bootstrap the SCF pretrain.
 .. autofunction:: jaqmc.utils.atomic.pretrain.make_pretrain_log_amplitude
 .. autofunction:: jaqmc.utils.atomic.pretrain.make_pretrain_loss
 ```
+
+### Periodic subspace references
+
+```{eval-rst}
+.. autoclass:: jaqmc.utils.atomic.pbc_tda.PBCTDAReferenceConfig
+.. autoclass:: jaqmc.utils.atomic.pbc_tda.PBCSinglePromotion
+.. autoclass:: jaqmc.utils.atomic.pbc_tda.PeriodicStateOrbitalReference
+   :members: prepare, eval_orbitals, eval_slater
+.. autofunction:: jaqmc.utils.atomic.pbc_tda.run_pbc_tda_promotions
+.. autoclass:: jaqmc.utils.atomic.subspace_pretrain.StateOrbitalReference
+.. autofunction:: jaqmc.utils.atomic.subspace_pretrain.make_subspace_pretrain_loss
+.. autofunction:: jaqmc.utils.atomic.subspace_pretrain.make_subspace_reference_log_amplitude
+```

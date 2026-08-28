@@ -140,6 +140,46 @@ Python, JAX, device, and CUDA environment before starting. JaQMC writes the
 resolved configuration into the run directory through its native workflow
 checkpoint/configuration path.
 
+## KUHF-TDA orbital pretraining
+
+Periodic solid subspaces can optionally pretrain their component networks from
+one ground KUHF determinant plus distinct dominant single promotions selected
+from PySCF PBC-TDA roots. PySCF performs both HF and TDA; JaQMC does not copy or
+reimplement the response solver. The selected determinants are initialization
+proxies for the low-energy span, not a claim that a full TDA root is a single
+determinant.
+
+Version 1 intentionally supports KUHF, `full_det: true`, integer occupations,
+and same-k (`kshift: 0`) promotions only. It rejects checkpoint-based component
+initialization when TDA pretraining is enabled. Pretraining uses the same
+`DeterminantStateWavefunction`, `DeterminantMCMCSampler`, `VMCWorkStage`, Adam
+adapter, writers, checkpoints, and pretrain-to-train state transfer as native
+JaQMC. Its diagonal state/replica orbital loss requires only $O(M)$ neural
+forward/gradient evaluations.
+
+```yaml
+pretrain:
+  enabled: true
+  tda:
+    kshift: 0
+    oversample: 4
+    candidate_topk: 8
+    min_selected_weight: 1.0e-4
+    require_converged: true
+    require_same_k: true
+  run:
+    iterations: 200
+    burn_in: 20
+  optim:
+    module: jaqmc.optimizer.optax:adam
+    learning_rate: 3.0e-4
+```
+
+Use `examples/solid/hchain_subspace_tda_pretrain_smoke.yml` for a one-step
+single-device check. For H24, combine `configs/systems/h24_base.yml`,
+`configs/workflows/subspace_tda_pretrain_smoke.yml`, and the appropriate
+hardware overlay in that order.
+
 The current sampler is the correctness-first full-recompute implementation: one
 replica row moves per proposal while the determinant is reevaluated through the
 normal sample-plan log-probability callback.  A cached Sherman--Morrison backend

@@ -565,6 +565,17 @@ class PeriodicSCF:
     def eval_orbitals(
         self, pos: jnp.ndarray, nspins: tuple[int, int]
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        """Evaluate occupied orbitals using the SCF ground-state coefficients."""
+        return self.eval_orbitals_from_coeffs(
+            pos, nspins, self.get_occupied_mo_coeffs()
+        )
+
+    def eval_orbitals_from_coeffs(
+        self,
+        pos: jnp.ndarray,
+        nspins: tuple[int, int],
+        mo_coeffs: tuple[list[jnp.ndarray], list[jnp.ndarray]],
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
         r"""Evaluate occupied orbital matrices for the Slater determinant.
 
         This method produces dense orbital matrices by evaluating all electrons
@@ -583,17 +594,15 @@ class PeriodicSCF:
         Args:
             pos: Electron positions with shape ``(..., nelec, 3)``.
             nspins: Tuple of ``(n_alpha, n_beta)`` electrons.
+            mo_coeffs: Spin-separated occupied MO coefficients, one matrix per
+                k-point. This has the same layout as ``self._mo_coeff`` but may
+                represent a state-specific occupied subspace.
 
         Returns:
             Tuple of ``(alpha_matrix, beta_matrix)`` orbital matrices with
             shapes ``(..., n_alpha, n_alpha)`` and ``(..., n_beta, n_beta)``.
 
-        Raises:
-            RuntimeError: If Hartree-Fock calculation has not been performed.
         """
-        if self._mo_coeff is None:
-            raise RuntimeError("Mean-field calculation has not been run.")
-
         n_alpha, n_beta = nspins
         leading_dims = pos.shape[:-2]
         pos_flat = jnp.reshape(pos, [-1, 3])  # (batch*nelec, 3)
@@ -628,8 +637,8 @@ class PeriodicSCF:
             # Concatenate along orbital axis: (batch, n_spin, total_orbs)
             return jnp.concatenate(mo_list, axis=-1)
 
-        alpha_mos = build_orbital_matrix(aos, slice(0, n_alpha), self._mo_coeff[0])
-        beta_mos = build_orbital_matrix(aos, slice(n_alpha, nelec), self._mo_coeff[1])
+        alpha_mos = build_orbital_matrix(aos, slice(0, n_alpha), mo_coeffs[0])
+        beta_mos = build_orbital_matrix(aos, slice(n_alpha, nelec), mo_coeffs[1])
 
         # Reshape to output format: (..., n_spin, n_spin)
         # Handle zero-electron cases explicitly to avoid reshape issues with -1
@@ -657,9 +666,30 @@ class PeriodicSCF:
         Returns:
             Log value of Slater determinant (complex).
         """
-        alpha_matrix, beta_matrix = self.eval_orbitals(pos, nspins)
+        return self.eval_slater_from_coeffs(
+            pos, nspins, self.get_occupied_mo_coeffs()
+        )
+
+    def eval_slater_from_coeffs(
+        self,
+        pos: jnp.ndarray,
+        nspins: tuple[int, int],
+        mo_coeffs: tuple[list[jnp.ndarray], list[jnp.ndarray]],
+    ) -> jnp.ndarray:
+        """Evaluate a Slater log-amplitude from supplied occupied MOs."""
+        alpha_matrix, beta_matrix = self.eval_orbitals_from_coeffs(
+            pos, nspins, mo_coeffs
+        )
         sign, logdet = _eval_slater_from_orbitals(alpha_matrix, beta_matrix)
         return logdet + jnp.log(sign)
+
+    def get_occupied_mo_coeffs(
+        self,
+    ) -> tuple[list[jnp.ndarray], list[jnp.ndarray]]:
+        """Return native occupied MO coefficients after periodic SCF."""
+        if self._mo_coeff is None:
+            raise RuntimeError("Mean-field calculation has not been run.")
+        return self._mo_coeff
 
     def get_orbital_kpoints(self) -> jnp.ndarray:
         """Get k-point assignment for each orbital in the wavefunction.

@@ -11,6 +11,11 @@ from .pp import (
     core_electrons_by_pp,
 )
 from .pretrain import make_pretrain_loss
+from .subspace_pretrain import (
+    StateOrbitalReference,
+    make_subspace_pretrain_loss,
+    make_subspace_reference_log_amplitude,
+)
 from .scf import MolecularSCF, PeriodicSCF
 
 __all__ = [
@@ -22,8 +27,11 @@ __all__ = [
     "AtomicSystemConfig",
     "MolecularSCF",
     "PeriodicSCF",
+    "StateOrbitalReference",
     "core_electrons_by_pp",
     "distribute_spins",
     "initialize_electrons_gaussian",
     "make_pretrain_loss",
+    "make_subspace_pretrain_loss",
+    "make_subspace_reference_log_amplitude",
 ]

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from jaqmc.data import BatchedData, Data
 from jaqmc.estimator import StreamingLossAndGrad
@@ -77,6 +78,23 @@ class ToyWavefunction:
 
     def phase_logpsi(self, params, data):
         return jnp.array(1.0), self.logpsi(params, data)
+
+    def orbitals(self, params, data):
+        value = params["slope"] * jnp.sum(data.electrons)
+        return value[None, None]
+
+
+class ToyStateReference:
+    n_states = 2
+
+    def eval_orbitals(self, state_index, pos, nspins):
+        del nspins
+        value = jnp.sum(pos) + state_index
+        return value[None, None], jnp.zeros((0, 0))
+
+    def eval_slater(self, state_index, pos, nspins):
+        del nspins
+        return state_index * jnp.sum(pos)
 
 
 def test_workflow_accepts_documented_nested_subspace_config():
@@ -222,3 +240,83 @@ def test_invalid_subspace_step_skips_optimizer_update():
     )
     np.testing.assert_array_equal(stats["update_norm"], 0)
     assert stage._has_nan(stats)
+
+
+def test_subspace_pretrain_reuses_wavefunction_and_determinant_sampler():
+    cfg = ConfigManager(
+        {
+            "workflow": {"batch_size": 2},
+            "subspace": {"n_states": 2},
+            "pretrain": {"run": {"iterations": 1, "burn_in": 0}},
+        }
+    )
+
+    def physical_data_init(size, rngs):
+        del rngs
+        return BatchedData(
+            ToyData(
+                electrons=jnp.ones((size, 1, 1)), atoms=jnp.ones((1, 3))
+            ),
+            ["electrons"],
+        )
+
+    def energy(params, data, prev_stats, state, rngs):
+        del params, data, prev_stats, rngs
+        return {"total_energy": jnp.array(1.0)}, state
+
+    workflow = SubspaceVMCWorkflow(cfg)
+    workflow.configure_subspace(
+        base_wavefunction=ToyWavefunction(),
+        physical_data_init=physical_data_init,
+        physical_energy_estimators={"total": energy},
+    )
+    workflow.configure_subspace_pretrain(
+        orbital_reference=ToyStateReference(),
+        nspins=(1, 0),
+        full_det=True,
+        ref_fraction=1.0,
+    )
+
+    pretrain_sampler = workflow.pretrain_stage.sample_plan.samplers[("electrons",)]
+    train_sampler = workflow.train_stage.sample_plan.samplers[("electrons",)]
+    assert workflow.pretrain_stage.wavefunction is workflow.train_stage.wavefunction
+    assert pretrain_sampler is train_sampler
+
+
+def test_subspace_pretrain_rejects_checkpoint_initialization():
+    cfg = ConfigManager(
+        {
+            "workflow": {"batch_size": 2},
+            "subspace": {
+                "n_states": 2,
+                "initialization": {
+                    "mode": "checkpoints",
+                    "checkpoints": ["state0", "state1"],
+                },
+            },
+        }
+    )
+
+    def physical_data_init(size, rngs):
+        del rngs
+        return BatchedData(
+            ToyData(
+                electrons=jnp.ones((size, 1, 1)), atoms=jnp.ones((1, 3))
+            ),
+            ["electrons"],
+        )
+
+    workflow = SubspaceVMCWorkflow(cfg)
+    workflow.configure_subspace(
+        base_wavefunction=ToyWavefunction(),
+        physical_data_init=physical_data_init,
+        physical_energy_estimators={},
+    )
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        workflow.configure_subspace_pretrain(
+            orbital_reference=ToyStateReference(),
+            nspins=(1, 0),
+            full_det=True,
+            ref_fraction=1.0,
+        )

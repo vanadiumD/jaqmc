@@ -20,6 +20,10 @@ from jaqmc.optimizer.kfac import KFACOptimizer
 from jaqmc.optimizer.optax import adam
 from jaqmc.sampler.mcmc import MCMCSampler
 from jaqmc.utils.atomic import PeriodicSCF
+from jaqmc.utils.atomic.pbc_tda import (
+    PBCTDAReferenceConfig,
+    PeriodicStateOrbitalReference,
+)
 from jaqmc.utils.atomic.pretrain import make_pretrain_log_amplitude, make_pretrain_loss
 from jaqmc.utils.config import ConfigManager, ConfigManagerLike
 from jaqmc.utils.supercell import get_reciprocal_vectors, get_supercell_kpts
@@ -170,10 +174,29 @@ class SolidSubspaceTrainWorkflow(SubspaceVMCWorkflow):
             physical_energy_estimators=energy_estimators_only(physical_estimators),
             physical_proposal=sampling_proposal,
         )
+        self.pretrain_enabled = cfg.get("pretrain.enabled", False)
+        self.subspace_reference = None
+        if self.pretrain_enabled:
+            tda_config = cfg.get("pretrain.tda", PBCTDAReferenceConfig)
+            self.subspace_reference = PeriodicStateOrbitalReference(
+                self.scf, self.spec.n_states, tda_config
+            )
+            nspins = (
+                system_config.electron_spins[0] * system_config.scale,
+                system_config.electron_spins[1] * system_config.scale,
+            )
+            self.configure_subspace_pretrain(
+                orbital_reference=self.subspace_reference,
+                nspins=nspins,
+                full_det=wf.full_det,
+                ref_fraction=reference_config.sample_fraction,
+            )
 
     def run(self) -> None:
         self.scf.run()
         self.base_wavefunction.klist = self.scf.get_orbital_kpoints()
+        if self.subspace_reference is not None:
+            self.subspace_reference.prepare()
         super().run()
 
 
