@@ -258,56 +258,23 @@ class VMCWorkStage(SamplingWorkStage):
         if grads is None:
             raise ValueError("None of the estimators provides `grads` stats.")
         final_stats["grad_norm"] = optax.tree.norm(grads)
-        apply_update = self.should_apply_update(final_stats)
-
-        def update(_):
-            updates, opt_state = self.optimizer.update(
-                grads,
-                state.opt_state,
-                params=state.params,
-                batched_data=data,
-                rngs=opt_rngs,
-            )
-            return (
-                optax.apply_updates(state.params, updates),
-                opt_state,
-                optax.tree.norm(updates),
-            )
-
-        if apply_update is None:
-            params, opt_state, update_norm = update(None)
-        else:
-            params, opt_state, update_norm = jax.lax.cond(
-                apply_update,
-                update,
-                lambda _: (
-                    state.params,
-                    state.opt_state,
-                    jnp.zeros_like(final_stats["grad_norm"]),
-                ),
-                operand=None,
-            )
-        final_stats["update_norm"] = update_norm
+        updates, opt_state = self.optimizer.update(
+            grads,
+            state.opt_state,
+            params=state.params,
+            batched_data=data,
+            rngs=opt_rngs,
+        )
+        final_stats["update_norm"] = optax.tree.norm(updates)
         new_state = replace(
             state,
-            params=params,
+            params=optax.apply_updates(state.params, updates),
             batched_data=data,
             sampler_state=sampler_state,
             estimator_state=estimator_state,
             opt_state=opt_state,
         )
         return new_state, {**final_stats, **sampler_stats}
-
-    def should_apply_update(
-        self, final_stats: dict[str, Any]
-    ) -> jax.Array | None:
-        """Return an optional runtime gate for the optimizer update.
-
-        ``None`` preserves the native unconditional update path. Subclasses
-        may return a scalar boolean array to gate the update with ``lax.cond``.
-        """
-        del final_stats
-        return None
 
     def _has_nan(self, stats: dict[str, Any]) -> bool:
         if not self.config.stop_on_nan:

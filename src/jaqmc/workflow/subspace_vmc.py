@@ -128,6 +128,7 @@ class SubspaceVMCWorkflow(VMCWorkflow):
         fields = (
             "pmove:.2f,energy=subspace_energy:.4f,"
             "variance=subspace_energy_var:.4f,imag=subspace_energy_imag:.2e,"
+            "grass_var=grassmann_hamiltonian_variance:.3e,"
             "sigma_min=amplitude_sigma_min:.2e,"
             "condition=amplitude_condition:.2e,"
             "residual=rayleigh_solve_residual:.2e,"
@@ -305,8 +306,27 @@ class SubspaceVMCWorkflow(VMCWorkflow):
 class SubspaceVMCWorkStage(VMCWorkStage):
     """Native VMC stage that skips updates for invalid Rayleigh steps."""
 
-    def should_apply_update(self, final_stats: dict[str, Any]) -> jax.Array:
-        return jnp.asarray(final_stats.get("training_step_valid", True))
+    def compute_step(self, state, rngs):
+        """Run the native step and roll back only an invalid optimizer update."""
+        new_state, stats = super().compute_step(state, rngs)
+        valid = jnp.asarray(stats.get("training_step_valid", True))
+        new_state = replace(
+            new_state,
+            params=jax.tree.map(
+                lambda new, old: jnp.where(valid, new, old),
+                new_state.params,
+                state.params,
+            ),
+            opt_state=jax.tree.map(
+                lambda new, old: jnp.where(valid, new, old),
+                new_state.opt_state,
+                state.opt_state,
+            ),
+        )
+        stats["update_norm"] = jnp.where(
+            valid, stats["update_norm"], jnp.zeros_like(stats["update_norm"])
+        )
+        return new_state, stats
 
     def _has_nan(self, stats: dict[str, Any]) -> bool:
         if "training_step_valid" in stats and not bool(

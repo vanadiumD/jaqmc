@@ -101,4 +101,5 @@ API reference for built-in estimators. For background, formulas, and configurati
 ```{eval-rst}
 .. autoclass:: jaqmc.estimator.RayleighMatrixEstimator
    :members:
+.. autofunction:: jaqmc.estimator.grassmann_hamiltonian_statistics
 ```

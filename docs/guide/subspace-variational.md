@@ -102,9 +102,51 @@ gradient uses the full complex $\operatorname{Tr}R_L$ through
 `train.grads` configuration for chunking and clipping. No NetKet runtime or
 second Hamiltonian implementation is used.
 
+## Grassmann optimization
+
+No separate Grassmann wavefunction or QGT implementation is required. For the
+determinant state,
+
+$$
+\partial_\mu\log\det\Phi
+=\operatorname{Tr}(\Phi^{-1}\partial_\mu\Phi),
+$$
+
+so passing `DeterminantStateWavefunction.logpsi` to JaQMC's existing
+`SROptimizer` produces the Grassmann score and metric. The recommended
+production preset is `configs/workflows/subspace_grassmann_sr.yml`; it retains
+JaQMC's chunking, mixed-precision solve, SPRING, and multi-device reductions
+while disabling robustness extensions for a controlled first comparison.
+
+For small, single-device A/B checks,
+`configs/workflows/subspace_gvmc_reference_sr.yml` selects
+`GVMCReferenceSROptimizer`. This backend independently implements the published
+GVMC sample-space minSR and Kaczmarz/SPRING equations from the
+[official accompanying repository](https://github.com/cqsl/GVMC) behind
+JaQMC's unchanged `OptimizerLike` interface, including the reference learning-rate scaling
+$\eta/\sqrt M$. It is a numerical oracle, not an H24 production backend.
+Both presets set `train.grads.clip_method: none`, matching the unclipped force
+used for the reference algorithm.
+
+The Rayleigh estimator also reports the Grassmann Hamiltonian variance without
+another Hamiltonian evaluation:
+
+$$
+\Sigma_H=\mathbb E[R_LE_L^*]-\mathbb E[R_L]\mathbb E[E_L]^*,\qquad
+\operatorname{Var}_V(H)=\frac1M\operatorname{Re}\operatorname{Tr}\Sigma_H.
+$$
+
+The appended writer fields are `grassmann_average_energy`,
+`grassmann_hamiltonian_variance`,
+`grassmann_hamiltonian_variance_matrix`, and `grassmann_hamiltonian_std`.
+Existing Rayleigh and subspace-energy fields are unchanged. In particular,
+`grassmann_hamiltonian_variance` diagnoses invariance of the entire span and is
+not interchangeable with `subspace_energy_var` or elementwise
+`local_rayleigh_variance`.
+
 ## Diagnostics
 
-Monitor `amplitude_sigma_min`, `amplitude_condition`,
+Monitor `grassmann_hamiltonian_variance`, `amplitude_sigma_min`, `amplitude_condition`,
 `rayleigh_solve_residual`, `max_ritz_imag`, and their warning fields.  A large
 condition number indicates nearly dependent component states, but is diagnostic
 only and does not remove a sample from the Monte Carlo measure. Every finite

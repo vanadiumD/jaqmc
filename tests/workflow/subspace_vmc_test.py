@@ -10,6 +10,8 @@ import pytest
 
 from jaqmc.data import BatchedData, Data
 from jaqmc.estimator import StreamingLossAndGrad
+from jaqmc.optimizer.gvmc_reference_sr import GVMCReferenceSROptimizer
+from jaqmc.optimizer.sr import SROptimizer
 from jaqmc.utils import parallel_jax
 from jaqmc.utils.config import ConfigManager
 from jaqmc.wavefunction.determinant_state import SubspaceSpec, take_replica
@@ -186,6 +188,51 @@ def test_workflow_accepts_documented_nested_subspace_config():
     assert all(
         np.isfinite(np.asarray(x)).all() for x in jax.tree.leaves(updated.params)
     )
+
+
+@pytest.mark.parametrize(
+    ("module", "expected_type"),
+    [
+        ("jaqmc.optimizer.sr:SROptimizer", SROptimizer),
+        (
+            "jaqmc.optimizer.gvmc_reference_sr:GVMCReferenceSROptimizer",
+            GVMCReferenceSROptimizer,
+        ),
+    ],
+)
+def test_subspace_optimizer_is_swappable_through_native_config(
+    module, expected_type
+):
+    cfg = ConfigManager(
+        {
+            "workflow": {"batch_size": 4},
+            "subspace": {"n_states": 2},
+            "train": {
+                "optim": {"module": module},
+                "grads": {"clip_method": "none"},
+            },
+        }
+    )
+
+    def physical_data_init(size, rngs):
+        del rngs
+        return BatchedData(
+            ToyData(
+                electrons=jnp.ones((size, 1, 1)), atoms=jnp.ones((1, 3))
+            ),
+            ["electrons"],
+        )
+
+    workflow = SubspaceVMCWorkflow(cfg)
+    workflow.configure_subspace(
+        base_wavefunction=ToyWavefunction(),
+        physical_data_init=physical_data_init,
+        physical_energy_estimators={},
+    )
+
+    assert isinstance(workflow.train_stage.optimizer, expected_type)
+    grads = workflow.train_stage.estimators.estimators["grads"]
+    assert grads.clip_method == "none"
 
 
 def test_invalid_subspace_step_skips_optimizer_update():

@@ -1,0 +1,14 @@
+# Small-system single-device oracle matching the GVMC minSR/Kacz equations.
+# Do not use this backend for H24 or multi-device production runs.
+train:
+  optim:
+    module: jaqmc.optimizer.gvmc_reference_sr:GVMCReferenceSROptimizer
+    learning_rate: 0.10
+    lam0: 1.0e-3
+    lam1: 1.0
+    mu: 0.9
+    scale_lr_by_sqrt_n_states: true
+    score_chunk_size: null
+  grads:
+    clip_method: none
+

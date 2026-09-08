@@ -10,8 +10,10 @@ from jaqmc.data import Data
 from jaqmc.estimator.rayleigh import (
     CrossLocalEnergyEvaluator,
     RayleighMatrixEstimator,
+    grassmann_hamiltonian_statistics,
 )
 from jaqmc.estimator.total_energy import TotalEnergy
+from jaqmc.utils import parallel_jax
 from jaqmc.wavefunction.determinant_state import SubspaceSpec
 
 
@@ -179,6 +181,133 @@ def test_subspace_energy_variance_uses_all_walkers():
     np.testing.assert_allclose(reduced["subspace_energy"], 9.0)
     np.testing.assert_allclose(reduced["subspace_energy_var"], 16.0)
     assert reduced["training_step_valid"]
+
+
+def test_grassmann_variance_matches_reference_formula_elementwise():
+    local_rayleigh = jnp.array(
+        [
+            [[1.0 + 0.2j, 0.3], [0.1j, 2.0 - 0.1j]],
+            [[1.4 - 0.3j, -0.2j], [0.5, 2.5 + 0.4j]],
+            [[0.8 + 0.1j, 0.7], [-0.3j, 1.7 - 0.2j]],
+        ],
+        dtype=jnp.complex128,
+    )
+    actual = grassmann_hamiltonian_statistics(local_rayleigh)
+
+    mean_rayleigh = jnp.mean(local_rayleigh, axis=0)
+    local_trace = jnp.trace(local_rayleigh, axis1=-2, axis2=-1)
+    expected_matrix = jnp.mean(
+        local_rayleigh * jnp.conj(local_trace)[:, None, None], axis=0
+    ) - mean_rayleigh * jnp.conj(jnp.mean(local_trace))
+    expected_variance = jnp.real(jnp.trace(expected_matrix)) / 2
+
+    np.testing.assert_allclose(
+        actual["grassmann_hamiltonian_variance_matrix"], expected_matrix
+    )
+    np.testing.assert_allclose(
+        actual["grassmann_hamiltonian_variance"], expected_variance
+    )
+    np.testing.assert_allclose(
+        actual["grassmann_average_energy"], jnp.trace(mean_rayleigh) / 2
+    )
+
+
+def test_grassmann_variance_m1_is_local_energy_variance():
+    local_energy = jnp.array([1.0, 2.0, 4.0], dtype=jnp.complex128)
+    stats = grassmann_hamiltonian_statistics(local_energy[:, None, None])
+
+    np.testing.assert_allclose(
+        stats["grassmann_hamiltonian_variance"], jnp.var(local_energy.real)
+    )
+
+
+def test_grassmann_variance_detects_hamiltonian_leakage():
+    invariant = jnp.broadcast_to(
+        jnp.array([[1.0, 0.2], [0.0, 2.0]], dtype=jnp.complex128),
+        (4, 2, 2),
+    )
+    leaking = invariant.at[:, 0, 0].add(jnp.array([-1.0, 0.0, 1.0, 2.0]))
+
+    invariant_stats = grassmann_hamiltonian_statistics(invariant)
+    leaking_stats = grassmann_hamiltonian_statistics(leaking)
+
+    np.testing.assert_allclose(
+        invariant_stats["grassmann_hamiltonian_variance"], 0, atol=1e-12
+    )
+    assert leaking_stats["grassmann_hamiltonian_variance"] > 0
+
+
+def test_rayleigh_reduce_appends_grassmann_fields_without_replacing_old_fields():
+    estimator = RayleighMatrixEstimator(matrix_dtype="complex128")
+    matrices = jnp.array(
+        [
+            [[1.0, 0.2], [0.1, 2.0]],
+            [[1.5, 0.3], [0.0, 2.5]],
+        ],
+        dtype=jnp.complex128,
+    )
+    stats = {
+        "local_rayleigh": matrices,
+        "subspace_local_energy": jnp.trace(matrices, axis1=-2, axis2=-1),
+        "subspace_energy": jnp.real(
+            jnp.trace(matrices, axis1=-2, axis2=-1)
+        ),
+        "rayleigh_valid": jnp.ones(2, dtype=bool),
+    }
+
+    reduced = estimator.reduce(stats)
+
+    for old_key in (
+        "subspace_energy",
+        "subspace_energy_var",
+        "local_rayleigh_variance",
+        "ritz_energies",
+    ):
+        assert old_key in reduced
+    for new_key in (
+        "grassmann_average_energy",
+        "grassmann_hamiltonian_variance",
+        "grassmann_hamiltonian_variance_matrix",
+        "grassmann_hamiltonian_std",
+    ):
+        assert new_key in reduced
+
+
+def test_grassmann_variance_uses_global_multi_device_moments():
+    if jax.local_device_count() < 2:
+        pytest.skip("requires at least two devices")
+    matrices = jnp.array(
+        [
+            [[[1.0, 0.1], [0.0, 2.0]], [[1.5, 0.2], [0.1, 2.2]]],
+            [[[0.5, -0.1], [0.2, 1.7]], [[2.0, 0.3], [0.0, 2.8]]],
+        ],
+        dtype=jnp.complex128,
+    )
+    estimator = RayleighMatrixEstimator(matrix_dtype="complex128")
+
+    def reduce(local_rayleigh):
+        trace = jnp.trace(local_rayleigh, axis1=-2, axis2=-1)
+        return estimator.reduce(
+            {
+                "local_rayleigh": local_rayleigh,
+                "subspace_local_energy": trace,
+                "subspace_energy": jnp.real(trace),
+                "rayleigh_valid": jnp.ones(local_rayleigh.shape[0], dtype=bool),
+            }
+        )
+
+    distributed = jax.pmap(
+        reduce, axis_name=parallel_jax.BATCH_AXIS_NAME
+    )(matrices)
+    expected = grassmann_hamiltonian_statistics(matrices.reshape(-1, 2, 2))
+
+    for key in (
+        "grassmann_average_energy",
+        "grassmann_hamiltonian_variance",
+        "grassmann_hamiltonian_variance_matrix",
+    ):
+        np.testing.assert_allclose(distributed[key][0], expected[key])
+        np.testing.assert_allclose(distributed[key][1], expected[key])
 
 
 def test_ill_conditioned_finite_solve_remains_a_valid_sample():

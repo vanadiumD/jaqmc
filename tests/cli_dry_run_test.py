@@ -477,6 +477,30 @@ def test_solid_subspace_h24_tda_pretrain_overlay_dry_run() -> None:
     assert result.exit_code == 0, result.output
 
 
+@pytest.mark.parametrize(
+    "optimizer_config",
+    ["subspace_grassmann_sr.yml", "subspace_gvmc_reference_sr.yml"],
+)
+def test_solid_subspace_grassmann_optimizer_overlay_dry_run(
+    optimizer_config: str,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    result = CliRunner().invoke(
+        cli,
+        [
+            "solid",
+            "subspace-train",
+            "--yml",
+            str(root / "examples" / "solid" / "hchain_subspace_smoke.yml"),
+            "--yml",
+            str(root / "configs" / "workflows" / optimizer_config),
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+
+
 def test_cli_verbose_config_dotlist(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level("INFO", logger="jaqmc.utils.config")
 

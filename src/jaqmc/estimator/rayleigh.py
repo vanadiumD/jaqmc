@@ -3,7 +3,7 @@
 
 """Rayleigh-matrix estimators built from JaQMC physical-energy components."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,6 +28,53 @@ from jaqmc.wavefunction.determinant_state import (
     take_replica,
     take_replica_dynamic,
 )
+
+
+def grassmann_hamiltonian_statistics(
+    local_rayleigh: jax.Array,
+    *,
+    mean_fn: Callable[[jax.Array], jax.Array] | None = None,
+) -> dict[str, jax.Array]:
+    r"""Compute Grassmann Hamiltonian-variance statistics.
+
+    This is the estimator used by Grassmann VMC to diagnose whether the
+    variational span is invariant under the Hamiltonian.  ``mean_fn`` consumes
+    the leading walker axis; callers may supply a distributed global mean.
+
+    Args:
+        local_rayleigh: Local Rayleigh matrices with shape ``[B, M, M]``.
+        mean_fn: Optional leading-axis mean implementation.
+
+    Returns:
+        The average energy, variance matrix, scalar variance, and standard
+        deviation.  The scalar variance is not clipped; only the square root
+        clips small negative Monte Carlo roundoff.
+    """
+    if local_rayleigh.ndim != 3:
+        raise ValueError(
+            "local_rayleigh must have shape [walkers, states, states]; "
+            f"got {local_rayleigh.shape}."
+        )
+    if local_rayleigh.shape[-2] != local_rayleigh.shape[-1]:
+        raise ValueError("local_rayleigh matrices must be square.")
+    mean = mean_fn or (lambda value: jnp.mean(value, axis=0))
+    local_trace = jnp.trace(local_rayleigh, axis1=-2, axis2=-1)
+    rayleigh_mean = mean(local_rayleigh)
+    trace_mean = mean(local_trace)
+    rayleigh_trace_mean = mean(
+        local_rayleigh * jnp.conj(local_trace)[..., None, None]
+    )
+    variance_matrix = (
+        rayleigh_trace_mean - rayleigh_mean * jnp.conj(trace_mean)
+    )
+    n_states = local_rayleigh.shape[-1]
+    variance = jnp.real(jnp.trace(variance_matrix)) / n_states
+    return {
+        "grassmann_average_energy": jnp.trace(rayleigh_mean) / n_states,
+        "grassmann_hamiltonian_variance_matrix": variance_matrix,
+        "grassmann_hamiltonian_variance": variance,
+        "grassmann_hamiltonian_std": jnp.sqrt(jnp.maximum(variance, 0)),
+    }
 
 
 @dataclass(frozen=True)
@@ -276,6 +323,13 @@ class RayleighMatrixEstimator(PerWalkerEstimator):
         reduced["subspace_energy_var"] = jnp.maximum(
             energy_second_moment - reduced["subspace_energy"] ** 2, 0
         )
+
+        def global_mean(value):
+            return parallel_jax.psum(jnp.sum(value, axis=0)) / global_total
+
+        grassmann_stats = grassmann_hamiltonian_statistics(
+            local_rayleigh, mean_fn=global_mean
+        )
         step_valid = global_count == global_total
         eig_input = jnp.where(step_valid, rayleigh_mean, jnp.zeros_like(rayleigh_mean))
         eigenvalues, eigenvectors = jnp.linalg.eig(eig_input)
@@ -285,6 +339,7 @@ class RayleighMatrixEstimator(PerWalkerEstimator):
         max_ritz_imag = jnp.max(jnp.abs(jnp.imag(eigenvalues)))
         return {
             **reduced,
+            **grassmann_stats,
             "rayleigh_mean": rayleigh_mean,
             "local_rayleigh_variance": rayleigh_var,
             "rayleigh_valid_fraction": valid_fraction,
