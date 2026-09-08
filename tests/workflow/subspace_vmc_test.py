@@ -271,8 +271,8 @@ def test_invalid_subspace_step_skips_optimizer_update():
 
     class Optimizer:
         def update(self, grads, opt_state, **kwargs):
-            del grads, kwargs
-            return {"w": jnp.array(jnp.nan)}, {"count": opt_state["count"] + 1}
+            del grads, opt_state, kwargs
+            raise AssertionError("optimizer must not be called")
 
     stage = object.__new__(SubspaceVMCWorkStage)
     stage.sample_plan = SamplePlan()

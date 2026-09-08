@@ -37,6 +37,17 @@ __all__ = [
 ]
 
 
+def _native_vmc_to_gvmc_gradient(gradient: jax.Array) -> jax.Array:
+    r"""Convert JaQMC's energy-gradient convention to the GVMC force form.
+
+    JaQMC's VMC estimators return ``2 Re[J^H B]`` for real parameters, while
+    the GVMC minimum-SR source equation is written for ``Re[J^H B]``.  Keep
+    this convention conversion at the reference-backend adapter boundary so
+    neither the native estimator nor the generic optimizer contract changes.
+    """
+    return 0.5 * gradient
+
+
 def _sample_matrix(jacobian: jax.Array, lam0: float, lam1: float) -> jax.Array:
     """Build the regularized sample-space matrix used by GVMC."""
     n_samples = jacobian.shape[0]
@@ -126,7 +137,11 @@ class GVMCReferenceSROptimizer:
 
     For production, use :class:`jaqmc.optimizer.sr.SROptimizer`; it evaluates
     the same Grassmann score while adding distributed reductions, chunked Gram
-    construction, mixed precision, and robust stabilization.
+    construction, mixed precision, and robust stabilization.  The native
+    ``OptimizerLike`` gradient supplied to :meth:`update` follows JaQMC's
+    ``2 Re[J^H B]`` VMC convention.  This adapter divides it by two before
+    applying the GVMC source equation, whose reduced gradient is
+    ``Re[J^H B]``.  ``previous_delta`` is therefore stored in GVMC convention.
 
     Args:
         learning_rate: Constant update step used by the GVMC reference code.
@@ -240,7 +255,8 @@ class GVMCReferenceSROptimizer:
             raise RuntimeError(
                 "GVMCReferenceSROptimizer.init must be called before update"
             )
-        gradient, unravel = ravel_pytree(grads)
+        native_gradient, unravel = ravel_pytree(grads)
+        gradient = _native_vmc_to_gvmc_gradient(native_gradient)
         score = self._score_matrix(params, batched_data)
         metric_previous = score @ state.previous_delta
         residual_gradient = (

@@ -6,9 +6,11 @@
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import replace
+from operator import itemgetter
 from typing import Any
 
 import jax
+import optax
 from jax import numpy as jnp
 
 from jaqmc.array_types import PRNGKey
@@ -304,29 +306,65 @@ class SubspaceVMCWorkflow(VMCWorkflow):
 
 
 class SubspaceVMCWorkStage(VMCWorkStage):
-    """Native VMC stage that skips updates for invalid Rayleigh steps."""
+    """Native VMC stage that gates invalid Rayleigh steps before optimization."""
 
     def compute_step(self, state, rngs):
-        """Run the native step and roll back only an invalid optimizer update."""
-        new_state, stats = super().compute_step(state, rngs)
-        valid = jnp.asarray(stats.get("training_step_valid", True))
-        new_state = replace(
-            new_state,
-            params=jax.tree.map(
-                lambda new, old: jnp.where(valid, new, old),
-                new_state.params,
-                state.params,
-            ),
-            opt_state=jax.tree.map(
-                lambda new, old: jnp.where(valid, new, old),
-                new_state.opt_state,
+        """Sample and estimate first, then bypass the optimizer if invalid."""
+        sampler_rngs, est_rngs, opt_rngs = jax.random.split(rngs, 3)
+        data, sampler_stats, sampler_state = self.sample_plan.step(
+            state.params, state.batched_data, state.sampler_state, sampler_rngs
+        )
+        step_stats, estimator_state = self.estimators.evaluate(
+            state.params, data, state.estimator_state, est_rngs
+        )
+        batched = jax.tree.map(itemgetter(None), step_stats)
+        final_stats = self.estimators.finalize_stats(batched, estimator_state)
+        grads = final_stats.pop("grads", None)
+        if grads is None:
+            raise ValueError("None of the estimators provides `grads` stats.")
+        grad_norm = optax.tree.norm(grads)
+        final_stats["grad_norm"] = grad_norm
+        valid = jnp.asarray(final_stats.get("training_step_valid", True))
+
+        def apply_optimizer(_):
+            updates, opt_state = self.optimizer.update(
+                grads,
                 state.opt_state,
-            ),
+                params=state.params,
+                batched_data=data,
+                rngs=opt_rngs,
+            )
+            return (
+                optax.apply_updates(state.params, updates),
+                opt_state,
+                optax.tree.norm(updates),
+            )
+
+        def preserve_state(_):
+            return state.params, state.opt_state, jnp.zeros_like(grad_norm)
+
+        try:
+            concrete_valid = bool(valid)
+        except jax.errors.TracerBoolConversionError:
+            params, opt_state, update_norm = jax.lax.cond(
+                valid, apply_optimizer, preserve_state, operand=None
+            )
+        else:
+            if concrete_valid:
+                params, opt_state, update_norm = apply_optimizer(None)
+            else:
+                params, opt_state, update_norm = preserve_state(None)
+
+        final_stats["update_norm"] = update_norm
+        new_state = replace(
+            state,
+            params=params,
+            batched_data=data,
+            sampler_state=sampler_state,
+            estimator_state=estimator_state,
+            opt_state=opt_state,
         )
-        stats["update_norm"] = jnp.where(
-            valid, stats["update_norm"], jnp.zeros_like(stats["update_norm"])
-        )
-        return new_state, stats
+        return new_state, {**final_stats, **sampler_stats}
 
     def _has_nan(self, stats: dict[str, Any]) -> bool:
         if "training_step_valid" in stats and not bool(

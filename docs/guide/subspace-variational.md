@@ -123,7 +123,12 @@ For small, single-device A/B checks,
 `GVMCReferenceSROptimizer`. This backend independently implements the published
 GVMC sample-space minSR and Kaczmarz/SPRING equations from the
 [official accompanying repository](https://github.com/cqsl/GVMC) behind
-JaQMC's unchanged `OptimizerLike` interface, including the reference learning-rate scaling
+JaQMC's unchanged `OptimizerLike` interface. JaQMC supplies the native VMC
+gradient $2\operatorname{Re}(J^\dagger B)$; the reference adapter converts it
+to the GVMC convention $\operatorname{Re}(J^\dagger B)$ before minSR and
+stores its Kaczmarz direction in that convention. This conversion intentionally
+does not change the shared gradient estimator or compensate through the learning
+rate. The backend also includes the reference learning-rate scaling
 $\eta/\sqrt M$. It is a numerical oracle, not an H24 production backend.
 Both presets set `train.grads.clip_method: none`, matching the unclipped force
 used for the reference algorithm.

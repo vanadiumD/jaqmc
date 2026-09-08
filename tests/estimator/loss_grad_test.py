@@ -13,6 +13,7 @@ from jaqmc.data import BatchedData, Data
 from jaqmc.estimator import LossAndGrad, StreamingLossAndGrad
 from jaqmc.utils.clip import clip_observable
 from jaqmc.utils.config import ConfigManager
+from jaqmc.utils.func_transform import grad_maybe_complex
 
 
 def _mock_all_gather_identity(monkeypatch):
@@ -82,6 +83,47 @@ def test_loss_and_grad_reduce_uses_selected_clip_method(monkeypatch):
 
 class GradientData(Data):
     x: jax.Array
+
+
+def test_native_vmc_gradient_convention_is_two_times_centered_score_force():
+    data = BatchedData(
+        GradientData(x=jnp.array([-1.2, -0.4, 0.1, 0.6, 1.0, 1.7])), ["x"]
+    )
+    params = {"weights": jnp.array([0.3, -0.2], dtype=jnp.float64)}
+    local_energy = jnp.array(
+        [0.8 + 0.1j, -0.4 + 0.7j, 1.3 - 0.2j,
+         -0.1 + 0.5j, 0.6 - 0.8j, -0.7 + 0.2j],
+        dtype=jnp.complex128,
+    )
+
+    def logpsi(p, sample):
+        value = p["weights"][0] * sample.x + p["weights"][1] * sample.x**2
+        return value + 0.2j * p["weights"][0] * sample.x**2
+
+    estimator = StreamingLossAndGrad(
+        loss_key="energy", clip_method="none", f_log_psi=logpsi
+    )
+    sums, _ = estimator.evaluate_batch_walkers(
+        params, data, {"energy": local_energy}, None, jax.random.key(0)
+    )
+    reduced = estimator.reduce(sums)
+    final = estimator.finalize_stats(
+        jax.tree.map(lambda x: x[None], reduced), None
+    )
+
+    scores = jax.vmap(lambda sample: grad_maybe_complex(logpsi)(params, sample))(
+        data.data
+    )["weights"]
+    n_walkers = data.batch_size
+    jacobian = (scores - jnp.mean(scores, axis=0)) / jnp.sqrt(n_walkers)
+    force = (local_energy - jnp.mean(local_energy)) / jnp.sqrt(n_walkers)
+    jacobian = jnp.concatenate((jnp.real(jacobian), jnp.imag(jacobian)), axis=0)
+    force = jnp.concatenate((jnp.real(force), jnp.imag(force)), axis=0)
+    gvmc_gradient = jacobian.T @ force
+
+    np.testing.assert_allclose(
+        final["grads"]["weights"], 2.0 * gvmc_gradient, rtol=1e-11, atol=1e-12
+    )
 
 
 @pytest.mark.parametrize("clip_method", ["none", "mad", "iqr"])
