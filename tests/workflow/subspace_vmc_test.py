@@ -16,6 +16,7 @@ from jaqmc.utils import parallel_jax
 from jaqmc.utils.config import ConfigManager
 from jaqmc.wavefunction.determinant_state import SubspaceSpec, take_replica
 from jaqmc.workflow.base import init_batched_data
+from jaqmc.workflow.stage.vmc import VMCState
 from jaqmc.workflow.subspace_vmc import (
     SubspaceVMCWorkflow,
     SubspaceVMCWorkStage,
@@ -287,6 +288,57 @@ def test_invalid_subspace_step_skips_optimizer_update():
     )
     np.testing.assert_array_equal(stats["update_norm"], 0)
     assert stage._has_nan(stats)
+
+
+def test_invalid_subspace_step_preserves_state_under_jit():
+    data = BatchedData(
+        ToyData(
+            electrons=jnp.ones((2, 1, 1)), atoms=jnp.ones((1, 3))
+        ),
+        ["electrons"],
+    )
+    original = VMCState(
+        params={"w": jnp.array(1.0)},
+        batched_data=data,
+        sampler_state=jnp.array(3),
+        estimator_state=jnp.array(4),
+        opt_state={"count": jnp.array(2)},
+    )
+
+    class SamplePlan:
+        def step(self, params, batched_data, sampler_state, rngs):
+            del params, rngs
+            return batched_data, {"pmove": jnp.array(1.0)}, sampler_state
+
+    class Estimators:
+        def evaluate(self, params, batched_data, estimator_state, rngs):
+            del params, batched_data, rngs
+            return {"dummy": jnp.array(0.0)}, estimator_state
+
+        def finalize_stats(self, stats, estimator_state):
+            del stats, estimator_state
+            return {
+                "grads": {"w": jnp.array(5.0)},
+                "training_step_valid": jnp.array(False),
+            }
+
+    class SentinelOptimizer:
+        def update(self, grads, opt_state, **kwargs):
+            del grads, opt_state, kwargs
+            return {"w": jnp.array(999.0)}, {"count": jnp.array(999)}
+
+    stage = object.__new__(SubspaceVMCWorkStage)
+    stage.sample_plan = SamplePlan()
+    stage.estimators = Estimators()
+    stage.optimizer = SentinelOptimizer()
+
+    updated, stats = jax.jit(stage.compute_step)(original, jax.random.key(0))
+
+    np.testing.assert_array_equal(updated.params["w"], original.params["w"])
+    np.testing.assert_array_equal(
+        updated.opt_state["count"], original.opt_state["count"]
+    )
+    np.testing.assert_array_equal(stats["update_norm"], 0)
 
 
 def test_subspace_pretrain_reuses_wavefunction_and_determinant_sampler():

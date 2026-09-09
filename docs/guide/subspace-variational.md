@@ -128,10 +128,17 @@ gradient $2\operatorname{Re}(J^\dagger B)$; the reference adapter converts it
 to the GVMC convention $\operatorname{Re}(J^\dagger B)$ before minSR and
 stores its Kaczmarz direction in that convention. This conversion intentionally
 does not change the shared gradient estimator or compensate through the learning
-rate. The backend also includes the reference learning-rate scaling
-$\eta/\sqrt M$. It is a numerical oracle, not an H24 production backend.
+rate. The configured learning rate is applied directly as $-\eta\delta$, matching
+the actual parameter update in `cqsl/GVMC`. Its source computes an auxiliary
+normalized displacement with $\eta/\sqrt M$, but does not apply that quantity
+to parameters. It is a numerical oracle, not an H24 production backend.
 Both presets set `train.grads.clip_method: none`, matching the unclipped force
 used for the reference algorithm.
+
+For a controlled plain-SR comparison, JaQMC native SR receives the factor-two
+gradient directly, so `learning_rate_native` is approximately
+`learning_rate_gvmc / 2`. This is only an initial A/B scale convention; robust
+SR, adaptive damping, MARCH, or norm clipping need separate comparisons.
 
 The Rayleigh estimator also reports the Grassmann Hamiltonian variance without
 another Hamiltonian evaluation:

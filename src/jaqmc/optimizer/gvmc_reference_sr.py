@@ -49,7 +49,7 @@ def _native_vmc_to_gvmc_gradient(gradient: jax.Array) -> jax.Array:
 
 
 def _sample_matrix(jacobian: jax.Array, lam0: float, lam1: float) -> jax.Array:
-    """Build the regularized sample-space matrix used by GVMC."""
+    """Build GVMC's matrix; ``lam1`` shifts all entries, not the diagonal."""
     n_samples = jacobian.shape[0]
     scale = jnp.linalg.norm(jacobian) ** 2 / n_samples
     matrix = jacobian @ jnp.conj(jacobian.T)
@@ -148,7 +148,6 @@ class GVMCReferenceSROptimizer:
         lam0: Diagonal sample-space regularization.
         lam1: Centered-score null-direction regularization.
         mu: Kaczmarz/SPRING continuation coefficient.
-        scale_lr_by_sqrt_n_states: Apply the reference ``1 / sqrt(M)`` scaling.
         n_states: Optional explicit state count. By default it is inferred from
             the leading axis shared by every determinant-state parameter leaf.
         score_chunk_size: Optional chunk size for score evaluation.
@@ -159,7 +158,6 @@ class GVMCReferenceSROptimizer:
     lam0: float = 1e-3
     lam1: float = 1.0
     mu: float = 0.9
-    scale_lr_by_sqrt_n_states: bool = True
     n_states: int | None = None
     score_chunk_size: int | None = None
     f_log_psi: NumericWavefunctionEvaluate = runtime_dep()
@@ -269,10 +267,10 @@ class GVMCReferenceSROptimizer:
             lam0=self.lam0,
             lam1=self.lam1,
         ) + self.mu * state.previous_delta
-        scale = self.learning_rate
-        if self.scale_lr_by_sqrt_n_states:
-            scale /= math.sqrt(self._resolved_n_states)
-        updates = unravel(-scale * delta)
+        # Match cqsl/GVMC's actual parameter update.  Its lr / sqrt(M)
+        # quantity is used only for an auxiliary displacement diagnostic and
+        # is not applied to params.
+        updates = unravel(-self.learning_rate * delta)
         return updates, GVMCReferenceSRState(
             counter=state.counter + 1,
             previous_delta=delta,

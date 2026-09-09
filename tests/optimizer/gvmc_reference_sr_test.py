@@ -4,6 +4,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+import optax
 import pytest
 from jax.flatten_util import ravel_pytree
 
@@ -65,6 +66,46 @@ def test_minsr_kacz_matches_reference_continuation():
     )
 
     np.testing.assert_allclose(actual, expected, rtol=1e-10, atol=1e-12)
+
+
+def test_minsr_and_kacz_match_cqsl_gvmc_golden_vectors():
+    """Anchor cqsl/GVMC@e68e503, including its all-entries lam1 shift."""
+    jacobian = jnp.array(
+        [
+            [0.7, -0.2, 0.4],
+            [-0.1, 0.9, -0.3],
+            [-0.6, -0.7, -0.1],
+            [0.2, 0.5, 0.8],
+        ],
+        dtype=jnp.float64,
+    )
+    force = jnp.array([0.35, -0.15, -0.25, 0.05], dtype=jnp.float64)
+    previous = jnp.array([0.12, -0.08, 0.03], dtype=jnp.float64)
+    expected_minsr = jnp.array(
+        [0.47438583246858684, -0.08512767274722458, 0.02486287395734668]
+    )
+    expected_kacz = jnp.array(
+        [0.4769540823520102, -0.08619417530168463, 0.02372779043486619]
+    )
+
+    actual_minsr = minsr_solve(
+        jacobian, force, lam0=0.017, lam1=0.65
+    )
+    actual_kacz = minsr_solve_kacz(
+        jacobian,
+        force,
+        previous,
+        lam0=0.017,
+        lam1=0.65,
+        mu=0.73,
+    )
+
+    np.testing.assert_allclose(
+        actual_minsr, expected_minsr, rtol=1e-12, atol=1e-13
+    )
+    np.testing.assert_allclose(
+        actual_kacz, expected_kacz, rtol=1e-12, atol=1e-13
+    )
 
 
 def test_gradient_form_is_equivalent_for_centered_force():
@@ -157,7 +198,7 @@ def _streaming_native_gradient(params, data, logpsi, local_trace):
     return final["grads"]
 
 
-def test_reference_optimizer_matches_direct_gvmc_single_step_with_factor_control():
+def test_reference_optimizer_m2_uses_source_lr_with_factor_control():
     params, data, logpsi = _linear_problem()
     local_trace = jnp.array(
         [0.8 + 0.1j, -0.4 + 0.7j, 1.3 - 0.2j, -0.1 + 0.5j,
@@ -189,7 +230,6 @@ def test_reference_optimizer_matches_direct_gvmc_single_step_with_factor_control
         lam0=lam0,
         lam1=lam1,
         mu=0.0,
-        scale_lr_by_sqrt_n_states=False,
         f_log_psi=logpsi,
     )
     state = optimizer.init(params, batched_data=data)
@@ -215,6 +255,8 @@ def test_reference_optimizer_matches_direct_gvmc_single_step_with_factor_control
     np.testing.assert_allclose(fixed_cosine, 1.0, rtol=1e-9)
     np.testing.assert_allclose(new_state.previous_delta, direct, rtol=1e-9)
     np.testing.assert_allclose(flat_updates, -learning_rate * direct, rtol=1e-9)
+    wrong_sqrt_scaled = -learning_rate / np.sqrt(2.0) * direct
+    assert not np.allclose(flat_updates, wrong_sqrt_scaled, rtol=1e-4, atol=1e-6)
 
 
 def test_reference_optimizer_matches_direct_gvmc_kacz_trajectory():
@@ -224,7 +266,6 @@ def test_reference_optimizer_matches_direct_gvmc_kacz_trajectory():
         lam0=3e-3,
         lam1=0.7,
         mu=0.8,
-        scale_lr_by_sqrt_n_states=False,
         f_log_psi=logpsi,
     )
     state = optimizer.init(params, batched_data=data)
@@ -261,6 +302,68 @@ def test_reference_optimizer_matches_direct_gvmc_kacz_trajectory():
         direct_previous = direct
 
 
+def test_reference_optimizer_matches_direct_gvmc_parameter_trajectory():
+    params, data, _ = _linear_problem()
+
+    def logpsi(p, sample):
+        weights = p["weights"]
+        value = jnp.sum((weights + 0.1 * weights**2) * sample.features)
+        phase = jnp.sum((weights + 0.05 * weights**3) * sample.features**2)
+        return value + 0.2j * phase
+
+    learning_rate = 0.02
+    optimizer = GVMCReferenceSROptimizer(
+        learning_rate=learning_rate,
+        lam0=4e-3,
+        lam1=0.6,
+        mu=0.7,
+        f_log_psi=logpsi,
+    )
+    params_direct = params
+    params_backend = params
+    state = optimizer.init(params_backend, batched_data=data)
+    direct_previous = jnp.zeros_like(state.previous_delta)
+    base_trace = jnp.array(
+        [0.7 + 0.2j, -0.3 + 0.6j, 1.1 - 0.4j, -0.2 + 0.3j,
+         0.5 - 0.7j, -0.8 + 0.1j, 0.9 + 0.5j, -0.1 - 0.5j]
+    )
+
+    for step in range(5):
+        local_trace = base_trace + 0.02 * step * jnp.arange(8) ** 2
+        jacobian, force = _reference_score_and_force(
+            params_direct, data, logpsi, local_trace
+        )
+        direct = minsr_solve_kacz(
+            jacobian,
+            force,
+            direct_previous,
+            lam0=optimizer.lam0,
+            lam1=optimizer.lam1,
+            mu=optimizer.mu,
+        )
+        _, unravel = ravel_pytree(params_direct)
+        params_direct = optax.apply_updates(
+            params_direct, unravel(-learning_rate * direct)
+        )
+
+        native_grads = _streaming_native_gradient(
+            params_backend, data, logpsi, local_trace
+        )
+        updates, state = optimizer.update(
+            native_grads, state, params_backend, batched_data=data
+        )
+        params_backend = optax.apply_updates(params_backend, updates)
+
+        np.testing.assert_allclose(
+            state.previous_delta, direct, rtol=1e-9, atol=1e-11
+        )
+        for actual, expected in zip(
+            jax.tree.leaves(params_backend), jax.tree.leaves(params_direct)
+        ):
+            np.testing.assert_allclose(actual, expected, rtol=1e-9, atol=1e-11)
+        direct_previous = direct
+
+
 def test_reference_optimizer_m1_matches_direct_sr_and_keeps_learning_rate():
     params, data, logpsi = _linear_problem(n_states=1)
     local_trace = jnp.array(
@@ -278,7 +381,6 @@ def test_reference_optimizer_m1_matches_direct_sr_and_keeps_learning_rate():
         learning_rate=0.07,
         lam0=1e-2,
         mu=0.0,
-        scale_lr_by_sqrt_n_states=True,
         f_log_psi=logpsi,
     )
     state = optimizer.init(params, batched_data=data)
