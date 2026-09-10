@@ -33,4 +33,5 @@ docs/apidocs/
 jupyter_execute/
 # Synced notebooks
 notebooks/
-/scripts/
+/scripts/*
+!/scripts/run_mypy.py
